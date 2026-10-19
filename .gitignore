@@ -1,0 +1,14 @@
+# Python environments
+prototype/.venv/
+prototype/.venv-convert/
+__pycache__/
+.pytest_cache/
+
+# Downloaded / generated models (see prototype/tools/fetch_assets.py, convert_models.py)
+prototype/models/
+
+# Local recordings, reports, baselines and test images stay on this machine
+prototype/data/
+
+# Rust
+spike/target/

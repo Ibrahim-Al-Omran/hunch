@@ -1,0 +1,20 @@
+[package]
+name = "hunch-spike"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Phase 1 spike: native camera capture + ONNX pose inference cost on Windows/macOS"
+
+[dependencies]
+anyhow = "1"
+cpu-time = "1"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+memory-stats = "1"
+nokhwa = { version = "0.10.11", features = ["input-native"] }
+ort = "=2.0.0-rc.14"
+serde_json = "1"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1

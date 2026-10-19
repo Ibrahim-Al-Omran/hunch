@@ -1,0 +1,6 @@
+# Dev-time only: TFLite -> ONNX conversion (tools/convert_models.py). Keep in a separate venv;
+# TensorFlow 2.15 needs numpy<2, which conflicts with the prototype environment.
+tensorflow-cpu==2.15.1
+tf2onnx==1.17.0
+onnx==1.16.2
+onnxruntime==1.31.0
