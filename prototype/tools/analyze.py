@@ -28,6 +28,7 @@ from hunch_cv import protocol as P  # noqa: E402
 from hunch_cv.calibration import Baseline, CalibrationError, calibrate, learn_slouch_direction  # noqa: E402
 from hunch_cv.features import FEATURES, FrameFeatures, compute_features  # noqa: E402
 from hunch_cv.landmarks import LEFT_EAR, LEFT_SHOULDER, NOSE, RIGHT_EAR, RIGHT_SHOULDER, Landmarks  # noqa: E402
+from hunch_cv.monitor import REMINDER, PostureMonitor  # noqa: E402
 from hunch_cv.scoring import (GOOD, INSUFFICIENT, POSSIBLE, RULE_FEATURES, UNCERTAIN, Assessment,  # noqa: E402
                               ScoringConfig, assess, window_score)
 
@@ -200,6 +201,19 @@ def backend_agreement(sess: Session, a_key: str, b_key: str) -> dict | None:
             "p95_px": float(np.quantile(px, 0.95)), "median_rel_face": float(np.median(rel))}
 
 
+def replay_reminders(rows: list[Row], baseline: Baseline, cfg: ScoringConfig, interval: float) -> list[tuple[float, str]]:
+    """Feed the whole session (transitions included) through the monitor at `interval`."""
+    monitor = PostureMonitor(baseline, cfg)
+    out, next_t = [], -math.inf
+    for r in rows:
+        if r.t < next_t:
+            continue
+        next_t = r.t + interval
+        _, events = monitor.update(r.t, r.lm)
+        out += [(e.t, r.cond if r.phase == "step" else f"{r.cond} (transition)") for e in events if e.kind == REMINDER]
+    return out
+
+
 def fmt(x: float, pct: bool = False, digits: int = 2) -> str:
     if x is None or not math.isfinite(x):
         return "n/a"
@@ -243,7 +257,8 @@ def main(argv: list[str] | None = None) -> Path:
     ap.add_argument("--window", type=int, default=3)
     ap.add_argument("--method", default="rule", choices=["rule", "learned"])
     ap.add_argument("--pitch-gate", type=float, default=None)
-    ap.add_argument("--yaw-tolerance", type=float, default=ScoringConfig.yaw_tolerance,
+    ap.add_argument("--threshold", type=float, default=ScoringConfig.threshold, help="the 'default' threshold rows")
+    ap.add_argument("--turn-tolerance", type=float, default=ScoringConfig.turn_tolerance,
                     help="turning gate; use a large value to disable")
     ap.add_argument("--out", type=Path, default=DATA / "reports")
     ap.add_argument("--rule", help="override scored features, e.g. head_y:1,shoulder_y:1 (direction from defaults or +1)")
@@ -264,7 +279,8 @@ def main(argv: list[str] | None = None) -> Path:
     variants = sorted({v for s in sessions for v in s.rows}, key=lambda v: (v.split("@")[1], v))
     if args.variants:
         variants = [v for v in variants if v in args.variants.split(",")]
-    cfg = ScoringConfig(method=args.method, pitch_gate=args.pitch_gate, yaw_tolerance=args.yaw_tolerance)
+    cfg = ScoringConfig(method=args.method, threshold=args.threshold, pitch_gate=args.pitch_gate,
+                        turn_tolerance=args.turn_tolerance)
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     out_dir = args.out / stamp
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -272,7 +288,7 @@ def main(argv: list[str] | None = None) -> Path:
     md = [f"# Phase 1 analysis ({stamp})", "",
           f"Sessions: {', '.join(s.name + ('' if s.completed else ' (incomplete)') for s in sessions)}  ",
           f"Simulated sampling every {args.interval:g} s, decisions on the median of {args.window} samples "
-          f"({args.interval * args.window:g} s windows, at least {args.window - 1} scorable). Scoring method: `{args.method}`, pitch gate: {args.pitch_gate}, yaw tolerance: {args.yaw_tolerance:g}.  ",
+          f"({args.interval * args.window:g} s windows, at least {args.window - 1} scorable). Scoring method: `{args.method}`, pitch gate: {args.pitch_gate}, turn tolerance: {args.turn_tolerance:g}.  ",
           "Scored features: " + ", ".join(f"{k} (weight {w:g})" for k, (_, w) in RULE_FEATURES.items()), ""]
     for s in sessions:
         md.append(f"- **{s.name}**: camera {s.header.get('camera')}, notes: {s.header.get('notes') or '-'}")
@@ -347,12 +363,22 @@ def main(argv: list[str] | None = None) -> Path:
         md.append("Plots: " + ", ".join(f"[{n}]({v.replace('@', '_')}_{n}.png)" for n in names))
         md.append("")
 
+        md += ["### Reminders from the monitor (30 s sustained, 5 min cooldown, default threshold)", "",
+               "Each session is replayed in time order, transitions included. D and E run back to back "
+               "(about 63 s of slouching), so one reminder is expected there; H and I are 30 s each.", "",
+               "| session | reminders (time s: condition) |", "|---|---|"]
+        for n in names:
+            rem = replay_reminders(scored[n], baselines[n], cfg, args.interval)
+            md.append(f"| {n} | " + (", ".join(f"{t:.0f}: {P.NAMES.get(c.split()[0], c)}{' (transition)' if 'transition' in c else ''}"
+                                               for t, c in rem) or "none") + " |")
+        md.append("")
+
         if len(names) > 1:
-            md += ["### Re-seating: calibrate on one session, evaluate on another", "",
+            md += [f"### Re-seating: calibrate on one session, evaluate on another (threshold {cfg.threshold:g})", "",
                    "| calibrated on \\ evaluated on | " + " | ".join(names) + " |", "|---|" + "---|" * len(names)]
             for ci in names:
                 cells = []
-                thr = per_session[ci][0]
+                thr = cfg.threshold
                 for ej in names:
                     s_ej = next(s for s in sessions if s.name == ej)
                     w = windows(score_rows(s_ej.rows[v], baselines[ci], cfg), args.interval, args.window)
@@ -362,10 +388,14 @@ def main(argv: list[str] | None = None) -> Path:
 
         ms = [r.ms for s in sessions for r in s.rows.get(v, []) if r.ms is not None]
         vis = np.nanmean([visible_fraction(rows, P.UPRIGHT + P.SLOUCH, cfg.min_visibility) for rows in scored.values()])
+        m50 = float(np.median(ms)) if ms else math.nan
+        m95 = float(np.quantile(ms, 0.95)) if ms else math.nan
         det = np.nanmean([per_session[n][2][0] for n in names])
         fp = np.nanmean([per_session[n][2][2] for n in names])
-        summary.append((v, vis, det, fp, per_session[names[0]][1], float(np.median(ms)) if ms else math.nan,
-                        float(np.quantile(ms, 0.95)) if ms else math.nan))
+        summary.append((v, vis, det, fp, per_session[names[0]][1], m50, m95))
+        det_d = np.nanmean([flagged_rate(ws[n], P.SLOUCH, cfg.threshold) for n in names])
+        fp_d = np.nanmean([flagged_rate(ws[n], P.UPRIGHT, cfg.threshold) for n in names])
+        summary.append((v, vis, det_d, fp_d, f"fixed {cfg.threshold:g}", m50, m95))
 
     md += ["## Exit criteria", "",
            f"Targets: visibility >= {EXIT['visibility']:.0%}, detection of D+E >= {EXIT['detection']:.0%}, "
@@ -376,7 +406,7 @@ def main(argv: list[str] | None = None) -> Path:
     for v, vis, det, fp, src, m50, m95 in summary:
         ok = vis >= EXIT["visibility"] and det >= EXIT["detection"] and fp <= EXIT["upright_fp"] + 1e-9
         md.append(f"| {v} | {fmt(vis, True)} | {fmt(det, True)} | {fmt(fp, True)} | {src} | {fmt(m50, digits=1)} | "
-                  f"{fmt(m95, digits=1)} | {'yes' if ok else 'no'}{'' if 'held' in src else ' (needs more sessions)'} |")
+                  f"{fmt(m95, digits=1)} | {'yes' if ok else 'no'}{' (needs more sessions)' if 'in-session' in src else ''} |")
     md.append("")
     md.append("Inference times were measured while several variants ran back to back; use tools/bench.py for clean numbers.")
     md.append("")

@@ -20,6 +20,7 @@ SPREAD_FLOOR = {
     "neck_ratio": 0.05,
     "face_scale": 0.03,
     "head_pitch": 0.05,
+    "head_turn": 0.03,
     "yaw": 0.03,
     "shoulder_width": 0.05,
     "world_neck_deg": 2.0,

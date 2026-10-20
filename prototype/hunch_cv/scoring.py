@@ -30,9 +30,10 @@ class ScoringConfig:
     method: str = "rule"  # "rule" or "learned" (needs baseline.slouch_direction)
     threshold: float = 2.5
     min_visibility: float = 0.5
-    # Absolute change in the yaw ratio. From an angled camera the far ear is
-    # occluded and guessed by the model, so the ratio wanders ~0.2 while upright.
-    yaw_tolerance: float = 0.3
+    # Change in head_turn (calibrated face sizes). Uses only the nose and near
+    # eye, which stay visible from an angled camera. 0.15 also gated strong
+    # forward-head samples in s1.
+    turn_tolerance: float = 0.2
     pitch_gate: float | None = None  # deviation units; None = flag only
     pitch_flag: float = 4.0
 
@@ -77,8 +78,8 @@ def assess(ff: FrameFeatures | None, baseline: Baseline, cfg: ScoringConfig) -> 
     dev = deviations(ff, baseline)
     score = raw_score(dev, baseline, cfg.method)
     reasons = []
-    yaw0 = baseline.median.get("yaw", math.nan)
-    if math.isfinite(yaw0) and abs(ff.get("yaw") - yaw0) > cfg.yaw_tolerance:
+    turn0 = baseline.median.get("head_turn", math.nan)
+    if math.isfinite(turn0) and abs(ff.get("head_turn") - turn0) > cfg.turn_tolerance:
         reasons.append("turned")
     pitch_dev = dev.get("head_pitch", 0.0)
     if pitch_dev > cfg.pitch_flag:

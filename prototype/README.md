@@ -1,4 +1,4 @@
-# Phase 1 prototype: posture detection feasibility
+# Detection prototype (Phases 1–2)
 
 A throwaway validation harness, not the shipped app. It answers one question:
 can a single angled (about 10 o'clock), wide-angle webcam reliably separate
@@ -6,8 +6,8 @@ upright from slouched posture? Only landmark coordinates are recorded; camera
 frames stay in memory unless `--save-frames` is passed explicitly.
 
 ```
-hunch_cv/      pose backends, features, calibration, scoring (pure, portable logic)
-tools/         record.py, live.py, analyze.py, bench.py, model tooling
+hunch_cv/      pose backends, features, calibration, scoring, monitor (pure, portable logic)
+tools/         record.py, live.py, analyze.py, passive.py, analyze_passive.py, bench.py, model tooling
 tests/         unit tests + end-to-end analysis on synthetic sessions
 ../spike/      Rust: native camera capture + ONNX Runtime pipeline, cost measurement
 ```
@@ -38,6 +38,35 @@ python -m venv .venv-convert
    `mp-full@320`, `mp-lite@640` and `onnx-lite@320` on the same frames.
 3. `python tools\analyze.py` writes `data/reports/<time>/report.md` plus plots.
 
+### Passive logging (normal work)
+
+Prompted slouches are exaggerated, so real accuracy comes from normal use:
+
+```powershell
+.\.venv\Scripts\python tools\passive.py --camera 0     # leave it running; Ctrl+C or Ctrl+Alt+Q stops
+.\.venv\Scripts\python tools\analyze_passive.py         # data/reports/passive-<time>/report.md
+```
+
+It samples once every 2 s with `mp-lite@320` and runs the monitor live.
+Reminders appear as a Windows notification with a beep. It writes landmarks,
+monitor events and labels to `data/passive/<start>.jsonl`, and never writes
+frames. It reuses `data/baseline.json` when there is one; otherwise it
+calibrates first. Global hotkeys (via `pynput`, LGPL; prototype only):
+
+| hotkey | action |
+|---|---|
+| Ctrl+Alt+S | label "I am slouching now" |
+| Ctrl+Alt+G | label "my posture is good now" |
+| Ctrl+Alt+W | label "that reminder was wrong" |
+| Ctrl+Alt+C | recalibrate (sit upright for 10 s after the beep) |
+| Ctrl+Alt+P | pause / resume; the camera is released while paused |
+| Ctrl+Alt+Q | quit |
+
+`analyze_passive.py` replays the logs through the monitor, so threshold and
+timings can change without new recordings (`--threshold`, `--sustain`,
+`--cooldown`). It reports time present, the state mix, reminders per hour,
+and how reminders line up with the labels. It also sweeps the threshold.
+
 ### Protocol
 
 | code | condition | expected |
@@ -51,9 +80,11 @@ python -m venv .venv-convert
 | J | out of frame | insufficient visibility |
 
 Analysis simulates one sample every 2 s and decides on the median of 3 samples
-(6 s windows). Thresholds are picked on the other sessions (leave-one-out) to
-keep upright windows flagged at 5% or less; a single session only gives
-optimistic in-session numbers.
+(6 s windows). The report scores two thresholds: the fixed default (2.5) and
+one picked on the other sessions (leave-one-out) to flag at most 2.5% of
+their upright windows. With only two sessions the held-out pick is unstable,
+so the fixed default is the one used. The report also replays each session
+through the monitor and checks applying one session's calibration to another.
 
 **Exit criteria (agreed):** visibility ≥ 90% in upright and slouch conditions,
 D+E detected in ≥ 90% of windows, ≤ 5% of upright windows flagged, holding on
@@ -75,21 +106,44 @@ Scored (chosen from s1, to be confirmed on further sessions):
 
 Recorded for diagnosis: `neck_ratio` (weak, because slouching from this angle
 lowers head and shoulders together), `face_scale`, `world_neck_deg`,
-`shoulder_width`, `torso_deg`. `yaw` marks a sample *uncertain* when it moves
-more than 0.3 from baseline; it varies about 0.2 while upright because the
-far ear is guessed. `head_pitch` flags looking down without gating.
+`shoulder_width`, `torso_deg`, `yaw`. A sample is *uncertain* (turned) when
+`head_turn` changes by more than 0.2 face sizes from baseline. `head_turn` is
+the nose's horizontal offset from the near eye. An earlier gate on `yaw`
+(the ear-distance ratio) was dropped: the far ear is guessed, so `yaw`
+drifted with the working head angle and marked about 65% of upright s2
+samples uncertain. `head_pitch` flags looking down without gating.
 
 Calibration stores the per-feature median and a robust spread (MAD with a
 floor). The rule score is the weighted mean of deviations in the "worse"
 direction, in units of that spread. A 6 s window is the median of its
-scorable samples and needs at least 2 of 3. The optional `learned` score
-projects onto the direction from the upright baseline to the user's own slouch
-reference; on s1 it was no better than the rule score.
+scorable samples and needs at least 2 of 3. Windows at or above **2.5** count
+as slouched; this one fixed threshold is used for every session. The optional
+`learned` score projects onto the direction from the upright baseline to the
+user's own slouch reference; on s1 it was no better than the rule score.
 
 Head and shoulder *height in the frame* carry most of the signal. That makes
 the score depend on chair height and camera position, so recalibrate after
 changing either. The re-seating comparison across sessions measures how much
 normal re-sitting costs.
+
+### Monitor (when to remind)
+
+`hunch_cv/monitor.py` has no clock or UI of its own. The caller passes
+timestamps, so the same code drives live use and offline replay.
+
+- **Sustained slouch:** a timer starts when a window reaches the threshold.
+  A reminder fires once the timer reaches 30 s. The timer resets only when the
+  window drops below 0.8× the threshold, so scores hovering at the threshold
+  don't restart it.
+- **Unscorable samples** (turned, occluded) pause the timer for up to 10 s;
+  longer gaps reset it.
+- **Cooldown** of 5 minutes between reminders. Snooze suppresses reminders
+  until a given time.
+- **Leaving the desk:** after 60 s with nobody detected the state becomes
+  *away* and the timer resets. On return the first 20 s are *settling*, with
+  no reminders. If head and shoulder height then differ from calibration by
+  more than 4 spreads, the monitor suggests recalibrating instead of
+  reminding. Calibration is never replaced automatically.
 
 ## Measured so far (Ryzen 7 7730U, Windows 11)
 
@@ -144,29 +198,40 @@ Notes:
 
 ## Known limitations (so far)
 
-- **Two sessions so far.** Features were chosen on s1. With thresholds set on
-  the other session (held-out, each session calibrated at its start), Lite at
-  320×240 caught 96% of forward-head and slouch windows with 5% of upright
-  windows flagged. The ONNX port caught 98% with 3%, and Full 90% with 2%.
-  Looking down and turning stayed at 0–8% for Lite. Mild forward head was
-  8% in s1 but 77% in s2, so it's inconsistent.
-- **Leaning in from the hips is flagged like slouching** (Lite 86% / 37% of
-  windows in s1 / s2, Full 22% / 37%). With a 30 s sustain requirement, brief
-  leans won't remind; sustained leaning toward the screen will.
-- **Calibration does not carry over between sittings.** Between s1 and s2 the
-  upright head and shoulder heights shifted 6–8× their jitter. Applying s1's
-  calibration to s2 caught only 35% of slouch windows (Lite). The app must
-  recalibrate each time the user sits down, or adapt the baseline, a Phase 2
-  design question.
-- **The turning check depends on calibration head angle.** In s2, about 65% of
-  upright samples were marked uncertain because the working head angle differed
-  from calibration. That costs coverage, not false reminders. Loosening the
-  check (0.5 or off) raised upright false flags on held-out data to 6–40%, so
-  the tolerance stays at 0.3.
-- **Thresholds vary by session** (held-out 2.2 for s1, 3.1 for s2 with Lite),
-  because the scale of the score depends on each calibration's spread.
+- **Two prompted sessions so far; accuracy in normal work is untested.**
+  Features were chosen on s1. With the fixed threshold 2.5 and each session
+  calibrated at its start, the share of forward-head and slouch windows caught
+  (and of upright windows flagged) was:
+
+  | variant | s1 | s2 |
+  |---|---|---|
+  | Lite 320 | 98% (3%) | 100% (1%) |
+  | ONNX Lite 320 | 100% (2%) | 100% (1%) |
+  | Full 320 | 98% (3%) | 100% (2%) |
+
+  Thresholds tuned on the other session did worse (Lite flagged 33% of
+  upright s1 windows), because one session is too little to tune on. Turning
+  was flagged in 0–5% of windows and reclining in 0–8%. Looking down was 0–8%
+  for Lite, but Full flagged it in 34% of s2 windows. Mild forward head was 3%
+  in s1 but 100% in s2, so it's inconsistent.
+- **Monitor replay:** each recording replayed through the monitor gives
+  exactly one reminder, during the D+E slouch block, for every variant. Upright
+  typing, looking down, turning, leaning in and reclining (30 s or shorter)
+  gave none.
+- **Calibration carries over between these two sittings now.** Applying one
+  session's calibration to the other caught 97–100% of slouch windows, with
+  1–2% of upright windows flagged (Lite, ONNX and Full at 320, threshold 2.5). An earlier
+  "does not carry over" finding (35%) came from the `yaw` gate marking most
+  of s2 uncertain, not from the posture features. Two sittings at the same
+  desk prove little, so the monitor still checks the position after each
+  return and suggests recalibrating.
+- **Leaning in from the hips is flagged like slouching** (Lite 95% / 40% of
+  windows in s1 / s2). Brief leans won't remind, because the slouch must last
+  30 s. Sustained leaning toward the screen will remind. Whether that is
+  wanted is still an open product decision.
 - Deliberate, prompted slouches are exaggerated, so a pass means
-  feasibility, not real-world accuracy.
+  feasibility, not real-world accuracy. Passive logging is meant to
+  measure it.
 - Looking down (F) and slouching share signals; `head_pitch` flags it, but
   whether it should gate warnings is decided from the data (`--pitch-gate`).
 - Leaning in from the hips (H) moves the head toward the camera much like

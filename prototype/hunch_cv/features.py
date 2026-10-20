@@ -31,7 +31,8 @@ FEATURES = (
     "neck_ratio",      # vertical near ear-above-shoulder distance
     "face_scale",      # log(face size / calibrated face size): head closer to camera -> larger
     "head_pitch",      # nose below ear / current face size: looking down -> larger
-    "yaw",             # nose-to-ear asymmetry: turning changes it
+    "head_turn",       # nose horizontal offset from near eye: turning changes it
+    "yaw",             # nose-to-ear asymmetry; relies on the occluded far ear, diagnostic only
     "shoulder_width",  # shoulder span
     "world_neck_deg",  # 3D ear-shoulder angle from vertical (model's metric estimate)
     "torso_deg",       # 2D shoulder-hip angle from vertical, only when hips are visible
@@ -108,6 +109,7 @@ def compute_features(lm: Landmarks, side: str, scale: float | None = None,
     v["neck_ratio"] = (sh[1] - ear[1]) / unit
     v["face_scale"] = math.log(face / unit)
     v["head_pitch"] = (nose[1] - ear[1]) / face
+    v["head_turn"] = (nose[0] - xy[s["eye"]][0]) / unit
 
     d_l = float(np.linalg.norm(nose - xy[L.LEFT_EAR]))
     d_r = float(np.linalg.norm(nose - xy[L.RIGHT_EAR]))
