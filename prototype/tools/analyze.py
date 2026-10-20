@@ -243,6 +243,8 @@ def main(argv: list[str] | None = None) -> Path:
     ap.add_argument("--window", type=int, default=3)
     ap.add_argument("--method", default="rule", choices=["rule", "learned"])
     ap.add_argument("--pitch-gate", type=float, default=None)
+    ap.add_argument("--yaw-tolerance", type=float, default=ScoringConfig.yaw_tolerance,
+                    help="turning gate; use a large value to disable")
     ap.add_argument("--out", type=Path, default=DATA / "reports")
     ap.add_argument("--rule", help="override scored features, e.g. head_y:1,shoulder_y:1 (direction from defaults or +1)")
     ap.add_argument("--variants", help="comma-separated subset of recorded variants")
@@ -262,7 +264,7 @@ def main(argv: list[str] | None = None) -> Path:
     variants = sorted({v for s in sessions for v in s.rows}, key=lambda v: (v.split("@")[1], v))
     if args.variants:
         variants = [v for v in variants if v in args.variants.split(",")]
-    cfg = ScoringConfig(method=args.method, pitch_gate=args.pitch_gate)
+    cfg = ScoringConfig(method=args.method, pitch_gate=args.pitch_gate, yaw_tolerance=args.yaw_tolerance)
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     out_dir = args.out / stamp
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -270,7 +272,7 @@ def main(argv: list[str] | None = None) -> Path:
     md = [f"# Phase 1 analysis ({stamp})", "",
           f"Sessions: {', '.join(s.name + ('' if s.completed else ' (incomplete)') for s in sessions)}  ",
           f"Simulated sampling every {args.interval:g} s, decisions on the median of {args.window} samples "
-          f"({args.interval * args.window:g} s windows, at least {args.window - 1} scorable). Scoring method: `{args.method}`, pitch gate: {args.pitch_gate}.  ",
+          f"({args.interval * args.window:g} s windows, at least {args.window - 1} scorable). Scoring method: `{args.method}`, pitch gate: {args.pitch_gate}, yaw tolerance: {args.yaw_tolerance:g}.  ",
           "Scored features: " + ", ".join(f"{k} (weight {w:g})" for k, (_, w) in RULE_FEATURES.items()), ""]
     for s in sessions:
         md.append(f"- **{s.name}**: camera {s.header.get('camera')}, notes: {s.header.get('notes') or '-'}")

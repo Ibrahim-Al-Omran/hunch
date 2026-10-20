@@ -144,12 +144,27 @@ Notes:
 
 ## Known limitations (so far)
 
-- **One session so far (s1).** Thresholds and features were tuned on it, so its
-  numbers are optimistic: Lite at 320×240 flagged 100% of forward-head and
-  slouch windows, 2% upright, 3% looking down, 3% turning, 0% mild forward head.
-- **Leaning in from the hips is flagged like slouching** (Lite 86% of windows,
-  Full 20%). With a 30 s sustain requirement, brief leans won't remind;
-  sustained leaning toward the screen will.
+- **Two sessions so far.** Features were chosen on s1. With thresholds set on
+  the other session (held-out, each session calibrated at its start), Lite at
+  320×240 caught 96% of forward-head and slouch windows with 5% of upright
+  windows flagged. The ONNX port caught 98% with 3%, and Full 90% with 2%.
+  Looking down and turning stayed at 0–8% for Lite. Mild forward head was
+  8% in s1 but 77% in s2, so it's inconsistent.
+- **Leaning in from the hips is flagged like slouching** (Lite 86% / 37% of
+  windows in s1 / s2, Full 22% / 37%). With a 30 s sustain requirement, brief
+  leans won't remind; sustained leaning toward the screen will.
+- **Calibration does not carry over between sittings.** Between s1 and s2 the
+  upright head and shoulder heights shifted 6–8× their jitter. Applying s1's
+  calibration to s2 caught only 35% of slouch windows (Lite). The app must
+  recalibrate each time the user sits down, or adapt the baseline, a Phase 2
+  design question.
+- **The turning check depends on calibration head angle.** In s2, about 65% of
+  upright samples were marked uncertain because the working head angle differed
+  from calibration. That costs coverage, not false reminders. Loosening the
+  check (0.5 or off) raised upright false flags on held-out data to 6–40%, so
+  the tolerance stays at 0.3.
+- **Thresholds vary by session** (held-out 2.2 for s1, 3.1 for s2 with Lite),
+  because the scale of the score depends on each calibration's spread.
 - Deliberate, prompted slouches are exaggerated, so a pass means
   feasibility, not real-world accuracy.
 - Looking down (F) and slouching share signals; `head_pitch` flags it, but
